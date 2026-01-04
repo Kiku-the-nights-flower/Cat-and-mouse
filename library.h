@@ -4,13 +4,6 @@
 #include <windows.h>
 #include <winternl.h>
 
-HMODULE GetLibraryBase(const wchar_t *);
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID);
-void OnProcessAttach();
-void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString);
-HANDLE CreateRegistryKey();
-int RegisterService();
-NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, void * value, unsigned long dataSize);
 
 typedef NTSTATUS (NTAPI *pNtOpenKey)(
     PHANDLE KeyHandle,
@@ -47,5 +40,16 @@ typedef struct API_TABLE {
     pNtClose       NtClose;
     pNtOpenKey     NtOpenKey;
 } API_TABLE, *PAPI_TABLE;
+
+HMODULE GetLibraryBase(const wchar_t *);
+void *GetProcAddressByHash(HMODULE hModule, const char *targetHash);
+void ArchiveNativeAPIs(HMODULE hNtdll, API_TABLE * );
+
+void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString);
+
+HANDLE CreateRegistryKey(PCWSTR path, API_TABLE * );
+int RegisterService(API_TABLE * );
+NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, void * value, unsigned long dataSize, API_TABLE *);
+
 
 #endif // CAT_AND_MOUSE_LIBRARY_H
