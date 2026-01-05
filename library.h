@@ -62,6 +62,7 @@ typedef struct API_TABLE {
     pNtWriteFile NtWriteFile;
     pNtCreateFile NtCreateFile;
     pNtSetInformationFile NtSetInformationFile;
+    pRtlDecompressBuffer RtlDecompressBuffer;
 } API_TABLE, *PAPI_TABLE;
 
 HMODULE GetLibraryBase(const wchar_t *);
