@@ -71,6 +71,11 @@ void ArchiveNativeAPIs(HMODULE hNtdll, API_TABLE * table) {
     table->NtSetValueKey = (pNtSetValueKey) GetProcAddress(hNtdll, "NtSetValueKey");
     table->NtClose = (pNtClose) GetProcAddress(hNtdll, "NtClose");
     table->NtOpenKey = (pNtOpenKey) GetProcAddress(hNtdll, "NtOpenKey");
+    table->NtWriteFile = (pNtWriteFile) GetProcAddress(hNtdll, "NtWriteFile");
+    table->NtCreateFile = (pNtCreateFile) GetProcAddress(hNtdll, "NtCreateFile");
+    table->NtSetInformationFile = (pNtSetInformationFile) GetProcAddress(hNtdll, "NtCreateFile");
+    table->RtlDecompressBuffer = (pRtlDecompressBuffer)GetProcAddress(hNtdll, "RtlCompressBuffer");
+
 }
 
 
