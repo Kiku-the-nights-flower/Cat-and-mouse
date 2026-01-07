@@ -1,7 +1,6 @@
 ﻿#include "library.h"
-#include <windows.h>
-#include <winternl.h>
-#include <stdio.h>
+
+#include <stdint.h>
 
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
@@ -9,130 +8,6 @@
 #define EXPORT
 #endif
 
-HMODULE GetLibraryBase(const wchar_t *dllName) {
-    //PEB is located at offset 60
-    ULONG_PTR peb = __readgsqword(0x60);
-
-    // ldr offset 0x18 from PEB
-    ULONG_PTR ldr = *(ULONG_PTR *) (peb + 0x18);
-
-    //get head of linked list of libraries
-    LIST_ENTRY *list_head = (LIST_ENTRY *) (ldr + 0x20);
-    LIST_ENTRY *current_node = list_head->Flink;
-
-    //This part is probably unnecessary, as the ntdll is almost always on the second jump, and kernel32.dll on the third
-    //with further imports after that
-    while (current_node != list_head) {
-        LDR_DATA_TABLE_ENTRY *libraryEntry = CONTAINING_RECORD(current_node, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
-        if (libraryEntry->FullDllName.Buffer != NULL) {
-            //TODO add hashing to possibly fool software we are loading kernel32.dll
-            //TODO add index checking that if we find libraries that are not supposed to be here, exit immediately
-            if (wcsstr(libraryEntry->FullDllName.Buffer, dllName) != NULL ||
-                wcsstr(libraryEntry->FullDllName.Buffer, dllName) != NULL) {
-                return (HMODULE) libraryEntry->DllBase;
-            }
-        }
-        current_node = current_node->Flink;
-    }
-    return nullptr;
-}
-
-void *GetProcAddressByHash(HMODULE hModule, const char *targetHash) {
-    //Get the DOS headers
-    PIMAGE_DOS_HEADER dosHeader = (PIMAGE_DOS_HEADER) hModule;
-    PIMAGE_NT_HEADERS ntHeaders = (PIMAGE_NT_HEADERS) ((BYTE *) hModule + dosHeader->e_lfanew);
-
-    //Export dir
-    IMAGE_DATA_DIRECTORY exportDirEntry = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    PIMAGE_EXPORT_DIRECTORY exportDir = (PIMAGE_EXPORT_DIRECTORY) ((BYTE *) hModule + exportDirEntry.VirtualAddress);
-
-    //Knowing the export dir, we know the offsets of the three function export tables
-    DWORD *nameArray = (DWORD *) ((BYTE *) hModule + exportDir->AddressOfNames);
-    WORD *ordinalArray = (WORD *) ((BYTE *) hModule + exportDir->AddressOfNameOrdinals);
-    DWORD *functionArray = (DWORD *) ((BYTE *) hModule + exportDir->AddressOfFunctions);
-
-    //find the function name through the name export
-    for (DWORD i = 0; i < exportDir->NumberOfNames; i++) {
-        //we have to cast to BYTE * here to force moving forward by one byte at a time
-        //RVA -> VA conversion could break otherwise
-        const auto functionName = (char *) ((BYTE *) hModule + nameArray[i]);
-        if (strcmp(functionName, targetHash) == 0) {
-            const WORD functionOrdinal = ordinalArray[i];
-            const DWORD functionRVA = functionArray[functionOrdinal];
-            return (void *) ((BYTE *) hModule + functionRVA);
-        }
-    }
-    return NULL;
-}
-
-void ArchiveNativeAPIs(HMODULE hNtdll, API_TABLE * table) {
-    // Replace 'ManualExportWalker' with your existing export-walking function
-    table->NtCreateKey = (pNtCreateKey) GetProcAddress(hNtdll, "NtCreateKey");
-    table->NtSetValueKey = (pNtSetValueKey) GetProcAddress(hNtdll, "NtSetValueKey");
-    table->NtClose = (pNtClose) GetProcAddress(hNtdll, "NtClose");
-    table->NtOpenKey = (pNtOpenKey) GetProcAddress(hNtdll, "NtOpenKey");
-    table->NtWriteFile = (pNtWriteFile) GetProcAddress(hNtdll, "NtWriteFile");
-    table->NtCreateFile = (pNtCreateFile) GetProcAddress(hNtdll, "NtCreateFile");
-    table->NtSetInformationFile = (pNtSetInformationFile) GetProcAddress(hNtdll, "NtCreateFile");
-    table->RtlDecompressBuffer = (pRtlDecompressBuffer)GetProcAddress(hNtdll, "RtlCompressBuffer");
-
-}
-
-
-HANDLE CreateRegistryKey(PCWSTR path, API_TABLE * api) {
-    HANDLE newKeyHandle = NULL;
-
-    UNICODE_STRING registryPath;
-    InitUnicodeString(&registryPath, path);
-
-    OBJECT_ATTRIBUTES objAttr;
-    InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
-
-    ULONG disp = 0;
-
-    NTSTATUS status = api->NtCreateKey(&newKeyHandle, KEY_ALL_ACCESS, &objAttr, 0, NULL, REG_OPTION_NON_VOLATILE, &disp);
-    if (status == 0) {
-        return newKeyHandle;
-    }
-    return nullptr;
-}
-
-HANDLE OpenRegistryKey(PCWSTR path, API_TABLE * api) {
-    UNICODE_STRING registryPath;
-    InitUnicodeString(&registryPath, path);
-
-    OBJECT_ATTRIBUTES objAttr;
-    InitializeObjectAttributes(&objAttr, &registryPath, 0x00000040 | 0x00000002, NULL, NULL);
-
-    HANDLE handle = NULL;
-
-    if (api->NtOpenKey(&handle, OBJ_CASE_INSENSITIVE, &objAttr) == 0)
-        return handle;
-    return nullptr;
-}
-
-NTSTATUS SetRegistryKeyValue(HANDLE keyHandle, PCWSTR name, unsigned long type, void *value,
-                             unsigned long dataSize, API_TABLE * api) {
-    UNICODE_STRING entryName;
-    InitUnicodeString(&entryName, name);
-
-    if (keyHandle != NULL) {
-        auto result = api->NtSetValueKey(keyHandle, &entryName, 0, type, value, dataSize);
-        if (result != 0) {
-            char errorMsg[64];
-            sprintf(errorMsg, "Write unsuccessful. NTSTATUS: 0x%08X", result);
-            MessageBoxA(nullptr, errorMsg, "ERROR", MB_OK | MB_ICONERROR);
-            api->NtClose(keyHandle);
-            return result;
-        }
-        return 0;
-    }
-    MessageBoxA(nullptr, "Key has not been opened",
-                "ERROR",
-                MB_OK | MB_ICONERROR);
-
-    return api->NtClose(keyHandle);
-}
 
 void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString) {
     if (SourceString) {
@@ -146,7 +21,6 @@ void InitUnicodeString(PUNICODE_STRING DestinationString, PCWSTR SourceString) {
         DestinationString->Buffer = NULL;
     }
 }
-
 
 
 
